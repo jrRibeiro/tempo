@@ -362,10 +362,44 @@ func TestQueryTrace(t *testing.T) {
 			},
 			expectedError: nil,
 		},
+		{
+			name: "assert querytrace with extra resource attributes not configured but expected",
+			traceOperation: func(trace *tempopb.Trace) {
+				for _, rs := range trace.ResourceSpans {
+					rs.Resource.Attributes = append(rs.Resource.Attributes, &v1_common.KeyValue{
+						Key:   "environment",
+						Value: &v1_common.AnyValue{Value: &v1_common.AnyValue_StringValue{StringValue: "staging"}},
+					})
+				}
+			},
+			expectedMetrics: traceMetrics{
+				requested:       1,
+				incorrectResult: 1,
+			},
+			expectedError: nil,
+		},
+		{
+			name: "assert querytrace with extra resource attributes configured and expected",
+			traceOperation: func(trace *tempopb.Trace) {
+				tempoExtraResourceAttributes = resourceAttrList{
+					&v1_common.KeyValue{
+						Key:   "environment",
+						Value: &v1_common.AnyValue{Value: &v1_common.AnyValue_StringValue{StringValue: "staging"}},
+					},
+				}
+				for _, rs := range trace.ResourceSpans {
+					rs.Resource.Attributes = append(rs.Resource.Attributes, tempoExtraResourceAttributes...)
+				}
+			},
+			expectedMetrics: traceMetrics{
+				requested: 1,
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			defer func() { tempoExtraResourceAttributes = nil }()
 			metrics, err := doQueryTrace(tt.traceOperation, tt.err)
 			assert.Equal(t, tt.expectedMetrics, metrics)
 			assert.Equal(t, tt.expectedError, err)

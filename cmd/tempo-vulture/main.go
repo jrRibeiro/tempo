@@ -12,10 +12,13 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/go-test/deep"
 	"github.com/grafana/tempo/pkg/api"
+	v1_common "github.com/grafana/tempo/pkg/tempopb/common/v1"
+	v1_resource "github.com/grafana/tempo/pkg/tempopb/resource/v1"
 	zaplogfmt "github.com/jsternberg/zap-logfmt"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
@@ -47,6 +50,8 @@ var (
 	rf1After             time.Time
 	tempoQueryLiveStores bool
 	logger               *zap.Logger
+
+	tempoExtraResourceAttributes resourceAttrList
 )
 
 type traceMetrics struct {
@@ -108,6 +113,32 @@ func (v timeVar) Set(s string) error {
 	return nil
 }
 
+type resourceAttrList []*v1_common.KeyValue
+
+func (r *resourceAttrList) String() string {
+	var parts []string
+	for _, kv := range *r {
+		parts = append(parts, fmt.Sprintf("%s=%s", kv.Key, kv.Value.GetStringValue()))
+	}
+	return strings.Join(parts, " ")
+}
+
+func (r *resourceAttrList) Set(val string) error {
+	parts := strings.SplitN(val, "=", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("expected key=value format, got %q", val)
+	}
+	*r = append(*r, &v1_common.KeyValue{
+		Key: strings.TrimSpace(parts[0]),
+		Value: &v1_common.AnyValue{
+			Value: &v1_common.AnyValue_StringValue{
+				StringValue: strings.TrimSpace(parts[1]),
+			},
+		},
+	})
+	return nil
+}
+
 func init() {
 	flag.StringVar(&prometheusPath, "prometheus-path", "/metrics", "The path to publish Prometheus metrics to.")
 	flag.StringVar(&prometheusListenAddress, "prometheus-listen-address", ":80", "The address to listen on for Prometheus scrapes.")
@@ -126,6 +157,8 @@ func init() {
 
 	flag.Var(newTimeVar(&rf1After), "rhythm-rf1-after", "Timestamp (RFC3339) after which only blocks with RF==1 are included in search and ID lookups")
 	flag.BoolVar(&tempoQueryLiveStores, "tempo-query-livestore", false, "When to query live stores")
+
+	flag.Var(&tempoExtraResourceAttributes, "extra-resource-attribute", "Resource attribute in key=value format to inject into expected traces")
 }
 
 func main() {
@@ -622,6 +655,15 @@ func queryTrace(client httpclient.TempoHTTPClient, info *util.TraceInfo, l *zap.
 	if err != nil {
 		logger.Error("unable to construct trace from epoch", zap.Error(err))
 		return tm, err
+	}
+
+	if len(tempoExtraResourceAttributes) > 0 {
+		for _, rs := range expected.ResourceSpans {
+			if rs.Resource == nil {
+				rs.Resource = &v1_resource.Resource{}
+			}
+			rs.Resource.Attributes = append(rs.Resource.Attributes, tempoExtraResourceAttributes...)
+		}
 	}
 
 	match := equalTraces(expected, trace)
